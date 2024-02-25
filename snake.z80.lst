@@ -1,0 +1,1121 @@
+0000                             ; refs:
+0000                             ; https://map.grauw.nl/resources/z80instr.php
+0000                ROM_START:   =   0x0000   
+0000                RAM_START:   =   0x2000   
+0000                PORT_LCD_DATA:   =   11111110b   
+0000                PORT_LCD_CTR:   =   11111101b   
+0000                CHARS_BUFFER:   =   (RAM_START + 0x0000)   
+0000                SNAKE_TAIL_BUFFER:   =   (RAM_START + 0x1100)   
+0000                PLAYER_X:   =   (RAM_START + 0x1000)   
+0000                PLAYER_Y:   =   (RAM_START + 0x1002)   
+0000                PLAYER_TAIL_X:   =   (RAM_START + 0x1004)   
+0000                PLAYER_TAIL_Y:   =   (RAM_START + 0x1006)   
+0000                PLAYER_DIR:   =   (RAM_START + 0x1008)   ; 1=left 2=right 4=up 8=down
+0000                R_SEED:   =   (RAM_START + 0x100a)   
+0000                SCORE:    =   (RAM_START + 0x100c)   
+0000                SCORE_MSG_RAM:   =   (RAM_START + 0x100e)   
+0000                FOOD_CHAR:   =   0x81   ;"*"
+0000                SNAKE_BODY_CHAR:   =   0x80   ;"O"
+0000                          .ORG   0x0000   
+0000                START:       
+0000   ED 7B FF 3F            LD   sp,(RAM_START + 0x1fff)   ; init stack at end of ram
+0004                             ; set initial random seed
+0004   3E B9                  LD   a,0xb9   
+0006   32 0A 30               LD   (r_seed),a   
+0009   CD 3F 07               CALL   lcd_init   
+000C                TITLE_SCREEN:      
+000C                             ; clear screen
+000C   0E 00                  LD   c,0   
+000E   16 00                  LD   d,0   
+0010   CD 8D 07               CALL   lcd_fill_screen   
+0013   CD AD 07               CALL   lcd_clear_chars_buffer   
+0016                             ; draw string terminated with 0 on lcd
+0016                             ; b = y
+0016                             ; c = x
+0016                             ; hl = string address terminated with 0
+0016   06 02                  LD   b,2   
+0018   0E 03                  LD   c,3   
+001A   21 DB 02               LD   hl,title_msg   
+001D   CD 48 08               CALL   lcd_print_str   
+0020                WAIT_PUSH_BUTTON:      
+0020   06 05                  LD   b,5   
+0022   0E 02                  LD   c,2   
+0024   21 E5 02               LD   hl,push_button_msg   
+0027   CD 48 08               CALL   lcd_print_str   
+002A   CD 4F 00               CALL   delay_push_button   
+002D   CB 67                  BIT   4,a   
+002F   CA 6A 00               JP   z,start_game   
+0032   CD 4F 00               CALL   delay_push_button   
+0035   CB 67                  BIT   4,a   
+0037   CA 6A 00               JP   z,start_game   
+003A   06 05                  LD   b,5   
+003C   0E 02                  LD   c,2   
+003E   21 F1 02               LD   hl,push_button_clr_msg   
+0041   CD 48 08               CALL   lcd_print_str   
+0044   CD 4F 00               CALL   delay_push_button   
+0047   CB 67                  BIT   4,a   
+0049   CA 6A 00               JP   z,start_game   
+004C   C3 20 00               JP   wait_push_button   
+004F                             ; return a=input
+004F                DELAY_PUSH_BUTTON:      
+004F   06 10                  LD   b,0x10   
+0051                DELAY_PUSH_BUTTON_WAIT_A:      
+0051   DB 00                  IN   a,(0)   ; read input
+0053   CB 67                  BIT   4,a   
+0055   CA 69 00               JP   z,delay_push_button_wait_force_exit   
+0058   C5                     PUSH   bc   
+0059   06 FF                  LD   b,0xff   
+005B                DELAY_PUSH_BUTTON_WAIT_B:      
+005B                             ; reuse this delay routine to change random seed
+005B   F5                     PUSH   af   
+005C   3A 0A 30               LD   a,(r_seed)   
+005F   3C                     INC   a   
+0060   32 0A 30               LD   (r_seed),a   
+0063   F1                     POP   af   
+0064   10 F5                  DJNZ   delay_push_button_wait_b   
+0066   C1                     POP   bc   
+0067   10 E8                  DJNZ   delay_push_button_wait_a   
+0069                DELAY_PUSH_BUTTON_WAIT_FORCE_EXIT:      
+0069   C9                     RET      
+006A                START_GAME:      
+006A                             ; clear screen
+006A   0E 00                  LD   c,0   
+006C   16 00                  LD   d,0   
+006E   CD 8D 07               CALL   lcd_fill_screen   
+0071   CD AD 07               CALL   lcd_clear_chars_buffer   
+0074                RESET_SCORE:      
+0074                             ; copy score_msg from ROM to RAM
+0074   06 0E                  LD   b,14   
+0076   21 FD 02               LD   hl,score_msg   ; src
+0079   11 0E 30               LD   de,SCORE_MSG_RAM   ; dest
+007C                COPY_SCORE_MSG_ROM_TO_RAM_NEXT_BYTE:      
+007C   7E                     LD   a,(hl)   
+007D   12                     LD   (de),a   
+007E   23                     INC   hl   
+007F   13                     INC   de   
+0080   10 FA                  DJNZ   copy_score_msg_rom_to_ram_next_byte   
+0082                             ; show score hud
+0082   06 00                  LD   b,0   
+0084   0E 00                  LD   c,0   
+0086   21 0E 30               LD   hl,SCORE_MSG_RAM   
+0089   CD 48 08               CALL   lcd_print_str   
+008C                             ; reset player position
+008C   3E 07                  LD   a,7   
+008E   32 00 30               LD   (PLAYER_X),a   
+0091   3E 04                  LD   a,4   
+0093   32 02 30               LD   (PLAYER_Y),a   
+0096   3E 07                  LD   a,7   
+0098   32 04 30               LD   (PLAYER_TAIL_X),a   
+009B   3E 04                  LD   a,4   
+009D   32 06 30               LD   (PLAYER_TAIL_Y),a   
+00A0   3E 0D                  LD   a,0x0d   ; right
+00A2   32 08 30               LD   (PLAYER_DIR),a   
+00A5                             ; create 3 initial foods
+00A5   CD 5E 02               CALL   create_new_food   
+00A8   CD 5E 02               CALL   create_new_food   
+00AB   CD 5E 02               CALL   create_new_food   
+00AE                             ; draw initial snake head
+00AE                             ; b = y
+00AE                             ; c = x
+00AE                             ; a = 0 or 1
+00AE   3A 02 30               LD   a,(PLAYER_Y)   
+00B1   47                     LD   b,a   
+00B2   3A 00 30               LD   a,(PLAYER_X)   
+00B5   4F                     LD   c,a   
+00B6   3E 80                  LD   a,SNAKE_BODY_CHAR   
+00B8   CD C4 07               CALL   lcd_put_char   
+00BB                MAIN_LOOP:      
+00BB                UPDATE_PLAYER_POSITION:      
+00BB   3A 08 30               LD   a,(PLAYER_DIR)   
+00BE   CB 47                  BIT   0,a   
+00C0   CA D5 00               JP   z,player_left   
+00C3   CB 4F                  BIT   1,a   
+00C5   CA E2 00               JP   z,player_right   
+00C8   CB 57                  BIT   2,a   
+00CA   CA EF 00               JP   z,player_up   
+00CD   CB 5F                  BIT   3,a   
+00CF   CA FC 00               JP   z,player_down   
+00D2   C3 06 01               JP   update_tail   
+00D5                PLAYER_LEFT:      
+00D5   CD 86 02               CALL   update_tail_buffer   
+00D8   3A 00 30               LD   a,(PLAYER_X)   
+00DB   3D                     DEC   a   
+00DC   32 00 30               LD   (PLAYER_X),a   
+00DF   C3 06 01               JP   update_tail   
+00E2                PLAYER_RIGHT:      
+00E2   CD 86 02               CALL   update_tail_buffer   
+00E5   3A 00 30               LD   a,(PLAYER_X)   
+00E8   3C                     INC   a   
+00E9   32 00 30               LD   (PLAYER_X),a   
+00EC   C3 06 01               JP   update_tail   
+00EF                PLAYER_UP:      
+00EF   CD 86 02               CALL   update_tail_buffer   
+00F2   3A 02 30               LD   a,(PLAYER_Y)   
+00F5   3D                     DEC   a   
+00F6   32 02 30               LD   (PLAYER_Y),a   
+00F9   C3 06 01               JP   update_tail   
+00FC                PLAYER_DOWN:      
+00FC   CD 86 02               CALL   update_tail_buffer   
+00FF   3A 02 30               LD   a,(PLAYER_Y)   
+0102   3C                     INC   a   
+0103   32 02 30               LD   (PLAYER_Y),a   
+0106                             ; ---------------------------
+0106                UPDATE_TAIL:      
+0106                             ; check if new player position is valid (is game over?)
+0106   3A 00 30               LD   a,(PLAYER_X)   
+0109   FE FF                  CP   255   
+010B   28 28                  JR   z,update_tail_game_over   
+010D   FE 10                  CP   16   
+010F   28 24                  JR   z,update_tail_game_over   
+0111   3A 02 30               LD   a,(PLAYER_Y)   
+0114   FE 00                  CP   0   
+0116   28 1D                  JR   z,update_tail_game_over   
+0118   FE 08                  CP   8   
+011A   28 19                  JR   z,update_tail_game_over   
+011C                             ; check new head position has food
+011C   21 00 20               LD   hl,CHARS_BUFFER   
+011F   3A 02 30               LD   a,(PLAYER_Y)   
+0122   47                     LD   b,a   
+0123   3A 00 30               LD   a,(PLAYER_X)   
+0126   4F                     LD   c,a   
+0127   09                     ADD   hl,bc   
+0128   7E                     LD   a,(hl)   
+0129   FE 81                  CP   FOOD_CHAR   ; is food?
+012B   CA 04 02               JP   z,new_head_position_is_food   
+012E   FE 80                  CP   SNAKE_BODY_CHAR   ; is snake body?
+0130   28 03                  JR   z,update_tail_game_over   
+0132   C3 38 01               JP   new_head_position_not_is_food   
+0135                UPDATE_TAIL_GAME_OVER:      
+0135   C3 24 02               JP   game_over   
+0138                NEW_HEAD_POSITION_NOT_IS_FOOD:      
+0138   21 00 31               LD   hl,SNAKE_TAIL_BUFFER   
+013B   3A 06 30               LD   a,(PLAYER_TAIL_Y)   
+013E   47                     LD   b,a   
+013F   3A 04 30               LD   a,(PLAYER_TAIL_X)   
+0142   4F                     LD   c,a   
+0143   09                     ADD   hl,bc   
+0144   7E                     LD   a,(hl)   
+0145                             ; --- update tail position ---
+0145   CB 47                  BIT   0,a   
+0147   CA 5C 01               JP   z,snake_tail_left   
+014A   CB 4F                  BIT   1,a   
+014C   CA 69 01               JP   z,snake_tail_right   
+014F   CB 57                  BIT   2,a   
+0151   CA 76 01               JP   z,snake_tail_up   
+0154   CB 5F                  BIT   3,a   
+0156   CA 83 01               JP   z,snake_tail_down   
+0159   C3 11 02               JP   main_continue   
+015C                SNAKE_TAIL_LEFT:      
+015C   CD 90 01               CALL   clear_tail_char   
+015F   3A 04 30               LD   a,(PLAYER_TAIL_X)   
+0162   3D                     DEC   a   
+0163   32 04 30               LD   (PLAYER_TAIL_X),a   
+0166   C3 11 02               JP   main_continue   
+0169                SNAKE_TAIL_RIGHT:      
+0169   CD 90 01               CALL   clear_tail_char   
+016C   3A 04 30               LD   a,(PLAYER_TAIL_X)   
+016F   3C                     INC   a   
+0170   32 04 30               LD   (PLAYER_TAIL_X),a   
+0173   C3 11 02               JP   main_continue   
+0176                SNAKE_TAIL_UP:      
+0176   CD 90 01               CALL   clear_tail_char   
+0179   3A 06 30               LD   a,(PLAYER_TAIL_Y)   
+017C   3D                     DEC   a   
+017D   32 06 30               LD   (PLAYER_TAIL_Y),a   
+0180   C3 11 02               JP   main_continue   
+0183                SNAKE_TAIL_DOWN:      
+0183   CD 90 01               CALL   clear_tail_char   
+0186   3A 06 30               LD   a,(PLAYER_TAIL_Y)   
+0189   3C                     INC   a   
+018A   32 06 30               LD   (PLAYER_TAIL_Y),a   
+018D   C3 11 02               JP   main_continue   
+0190                CLEAR_TAIL_CHAR:      
+0190                             ; b = y
+0190                             ; c = x
+0190                             ; a = 0 or 1
+0190   3A 06 30               LD   a,(PLAYER_TAIL_Y)   
+0193   47                     LD   b,a   
+0194   3A 04 30               LD   a,(PLAYER_TAIL_X)   
+0197   4F                     LD   c,a   
+0198   3E 20                  LD   a," "   
+019A   CD C4 07               CALL   lcd_put_char   
+019D   C9                     RET      
+019E                             ; ---  ---
+019E                             ; --- show score ---
+019E                SHOW_SCORE:      
+019E                SHOW_SCORE_0:      
+019E   3A 1A 30               LD   a,(SCORE_MSG_RAM + 12)   
+01A1   3C                     INC   a   
+01A2   32 1A 30               LD   (SCORE_MSG_RAM + 12),a   
+01A5   FE 3A                  CP   0x3a   
+01A7   20 50                  JR   nz,show_score_exit   
+01A9                SHOW_SCORE_1:      
+01A9   3E 30                  LD   a,"0"   
+01AB   32 1A 30               LD   (SCORE_MSG_RAM + 12),a   
+01AE   3A 19 30               LD   a,(SCORE_MSG_RAM + 11)   
+01B1   3C                     INC   a   
+01B2   32 19 30               LD   (SCORE_MSG_RAM + 11),a   
+01B5   FE 3A                  CP   0x3a   
+01B7   20 40                  JR   nz,show_score_exit   
+01B9                SHOW_SCORE_2:      
+01B9   3E 30                  LD   a,"0"   
+01BB   32 19 30               LD   (SCORE_MSG_RAM + 11),a   
+01BE   3A 18 30               LD   a,(SCORE_MSG_RAM + 10)   
+01C1   3C                     INC   a   
+01C2   32 18 30               LD   (SCORE_MSG_RAM + 10),a   
+01C5   FE 3A                  CP   0x3a   
+01C7   20 30                  JR   nz,show_score_exit   
+01C9                SHOW_SCORE_3:      
+01C9   3E 30                  LD   a,"0"   
+01CB   32 18 30               LD   (SCORE_MSG_RAM + 10),a   
+01CE   3A 17 30               LD   a,(SCORE_MSG_RAM + 9)   
+01D1   3C                     INC   a   
+01D2   32 17 30               LD   (SCORE_MSG_RAM + 9),a   
+01D5   FE 3A                  CP   0x3a   
+01D7   20 20                  JR   nz,show_score_exit   
+01D9                SHOW_SCORE_4:      
+01D9   3E 30                  LD   a,"0"   
+01DB   32 17 30               LD   (SCORE_MSG_RAM + 9),a   
+01DE   3A 16 30               LD   a,(SCORE_MSG_RAM + 8)   
+01E1   3C                     INC   a   
+01E2   32 16 30               LD   (SCORE_MSG_RAM + 8),a   
+01E5   FE 3A                  CP   0x3a   
+01E7   20 10                  JR   nz,show_score_exit   
+01E9                SHOW_SCORE_5:      
+01E9   3E 30                  LD   a,"0"   
+01EB   32 16 30               LD   (SCORE_MSG_RAM + 8),a   
+01EE   3A 15 30               LD   a,(SCORE_MSG_RAM + 7)   
+01F1   3C                     INC   a   
+01F2   32 15 30               LD   (SCORE_MSG_RAM + 7),a   
+01F5   FE 3A                  CP   0x3a   
+01F7   20 00                  JR   nz,show_score_exit   
+01F9                SHOW_SCORE_EXIT:      
+01F9                             ; show score hud
+01F9   06 00                  LD   b,0   
+01FB   0E 00                  LD   c,0   
+01FD   21 0E 30               LD   hl,SCORE_MSG_RAM   
+0200   CD 48 08               CALL   lcd_print_str   
+0203   C9                     RET      
+0204                NEW_HEAD_POSITION_IS_FOOD:      
+0204                             ; inc score
+0204   3A 0C 30               LD   a,(SCORE)   
+0207   3C                     INC   a   
+0208   32 0C 30               LD   (SCORE),a   
+020B   CD 9E 01               CALL   show_score   
+020E   CD 5E 02               CALL   create_new_food   
+0211                MAIN_CONTINUE:      
+0211                DRAW_NEW_SNAKE_HEAD:      
+0211                             ; b = y
+0211                             ; c = x
+0211                             ; a = 0 or 1
+0211   3A 02 30               LD   a,(PLAYER_Y)   
+0214   47                     LD   b,a   
+0215   3A 00 30               LD   a,(PLAYER_X)   
+0218   4F                     LD   c,a   
+0219   3E 80                  LD   a,SNAKE_BODY_CHAR   
+021B   CD C4 07               CALL   lcd_put_char   
+021E   CD 97 02               CALL   delay   
+0221   C3 BB 00               JP   main_loop   
+0224                             ; --- game over ---
+0224                GAME_OVER:      
+0224                             ; show game over msg
+0224   06 03                  LD   b,3   
+0226   0E 02                  LD   c,2   
+0228   21 0B 03               LD   hl,game_over_msg_0   
+022B   CD 48 08               CALL   lcd_print_str   
+022E   06 04                  LD   b,4   
+0230   0E 02                  LD   c,2   
+0232   21 17 03               LD   hl,game_over_msg_1   
+0235   CD 48 08               CALL   lcd_print_str   
+0238                GAME_OVER_WAIT_BUTTON:      
+0238   06 05                  LD   b,5   
+023A   0E 02                  LD   c,2   
+023C   21 23 03               LD   hl,game_over_msg_2   
+023F   CD 48 08               CALL   lcd_print_str   
+0242   CD 4F 00               CALL   delay_push_button   
+0245   CB 67                  BIT   4,a   
+0247   20 EF                  JR   nz,game_over_wait_button   
+0249                GAME_OVER_BACK_TO_TITLE:      
+0249   C3 0C 00               JP   title_screen   
+024C                             ; --- random number ---
+024C                             ; ref: https://philpem.me.uk/leeedavison/z80/prng/index.html
+024C                             ; return a = random number
+024C                GENERATE_RANDOM_NUMBER:      
+024C                             ; returns pseudo random 8 bit number in A. Only affects A.
+024C                             ; (r_seed) is the byte from which the number is generated and MUST be
+024C                             ; initialised to a non zero value or this function will always return
+024C                             ; zero. Also r_seed must be in RAM, you can see why......
+024C                RAND_8:      
+024C   3A 0A 30               LD   A,(r_seed)   ; get seed
+024F   E6 B8                  AND   0xB8   ; mask non feedback bits
+0251   37                     SCF      ; set carry
+0252   E2 56 02               JP   PO,no_clr   ; skip clear if odd
+0255   3F                     CCF      ; complement carry (clear it)
+0256                NO_CLR:      
+0256   3A 0A 30               LD   A,(r_seed)   ; get seed back
+0259   17                     RLA      ; rotate carry into byte
+025A   32 0A 30               LD   (r_seed),A   ; save back for next prn
+025D   C9                     RET      ; done
+025E                             ; 
+025E                             ; --- generate food at random location
+025E                CREATE_NEW_FOOD:      
+025E                CREATE_NEW_FOOD_POSITION_TRY_AGAIN:      
+025E   CD 4C 02               CALL   generate_random_number   
+0261   57                     LD   d,a   
+0262   E6 0F                  AND   0001111b   
+0264   4F                     LD   c,a   ; c = random x 0-15
+0265   7A                     LD   a,d   
+0266   E6 70                  AND   01110000b   
+0268   CB 3F                  SRL   a   
+026A   CB 3F                  SRL   a   
+026C   CB 3F                  SRL   a   
+026E   CB 3F                  SRL   a   
+0270   28 EC                  JR   z,create_new_food_position_try_again   ; first line is reserved for hud to show score
+0272   47                     LD   b,a   ; b = random y 0-8
+0273                             ; check new head position has food
+0273   21 00 20               LD   hl,CHARS_BUFFER   
+0276   09                     ADD   hl,bc   
+0277   7E                     LD   a,(hl)   
+0278   FE 80                  CP   SNAKE_BODY_CHAR   ; is snake body?
+027A                             ; if so, position is occupied so try to generate again
+027A   28 E2                  JR   z,create_new_food_position_try_again   
+027C   FE 81                  CP   FOOD_CHAR   ; already has a food?
+027E                             ; if so, position is occupied so try to generate again
+027E   28 DE                  JR   z,create_new_food_position_try_again   
+0280                CREATE_NEW_FOOD_POSITION_FREE:      
+0280                             ;ld b, random_y
+0280                             ;ld c, random_x
+0280   3E 81                  LD   a,FOOD_CHAR   
+0282   CD C4 07               CALL   lcd_put_char   
+0285   C9                     RET      
+0286                             ; --- snake tail buffer ---
+0286                UPDATE_TAIL_BUFFER:      
+0286   21 00 31               LD   hl,SNAKE_TAIL_BUFFER   
+0289   3A 02 30               LD   a,(PLAYER_Y)   
+028C   47                     LD   b,a   
+028D   3A 00 30               LD   a,(PLAYER_X)   
+0290   4F                     LD   c,a   
+0291   09                     ADD   hl,bc   
+0292   3A 08 30               LD   a,(PLAYER_DIR)   
+0295   77                     LD   (hl),a   
+0296   C9                     RET      
+0297                             ; return a=input
+0297                DELAY:       
+0297   06 1F                  LD   b,0x1f   
+0299                DELAY_WAIT_A:      
+0299   C5                     PUSH   bc   
+029A                             ;-----------------------------
+029A                UPDATE_PLAYER_DIR:      
+029A   DB 00                  IN   a,(0)   ; read input
+029C   CB 47                  BIT   0,a   
+029E   CA B3 02               JP   z,player_dir_left   
+02A1   CB 4F                  BIT   1,a   
+02A3   CA BB 02               JP   z,player_dir_right   
+02A6   CB 57                  BIT   2,a   
+02A8   CA C3 02               JP   z,player_dir_up   
+02AB   CB 5F                  BIT   3,a   
+02AD   CA CB 02               JP   z,player_dir_down   
+02B0   C3 D0 02               JP   delay_continue   
+02B3                PLAYER_DIR_LEFT:      
+02B3   3E 0E                  LD   a,0x0e   
+02B5   32 08 30               LD   (PLAYER_DIR),a   
+02B8   C3 D0 02               JP   delay_continue   
+02BB                PLAYER_DIR_RIGHT:      
+02BB   3E 0D                  LD   a,0x0d   
+02BD   32 08 30               LD   (PLAYER_DIR),a   
+02C0   C3 D0 02               JP   delay_continue   
+02C3                PLAYER_DIR_UP:      
+02C3   3E 0B                  LD   a,0x0b   
+02C5   32 08 30               LD   (PLAYER_DIR),a   
+02C8   C3 D0 02               JP   delay_continue   
+02CB                PLAYER_DIR_DOWN:      
+02CB   3E 07                  LD   a,0x07   
+02CD   32 08 30               LD   (PLAYER_DIR),a   
+02D0                DELAY_CONTINUE:      
+02D0                             ;-----------------------------
+02D0   06 FF                  LD   b,0xff   
+02D2                DELAY_WAIT_B:      
+02D2   00                     NOP      
+02D3   00                     NOP      
+02D4   00                     NOP      
+02D5   10 FB                  DJNZ   delay_wait_b   
+02D7   C1                     POP   bc   
+02D8   10 BF                  DJNZ   delay_wait_a   
+02DA   C9                     RET      
+02DB                             ; --- variable ---
+02DB   53 20 4E 20 41 20 4B 20 45 00 TITLE_MSG:   DB   "S N A K E",0   
+02E5   50 55 53 48 20 42 55 54 54 4F 4E 00 PUSH_BUTTON_MSG:   DB   "PUSH BUTTON",0   
+02F1   20 20 20 20 20 20 20 20 20 20 20 00 PUSH_BUTTON_CLR_MSG:   DB   "           ",0   
+02FD   53 43 4F 52 45 3A 20 30 30 30 30 30 30 00 SCORE_MSG:   DB   "SCORE: 000000",0   
+030B   20 20 20 20 20 20 20 20 20 20 20 00 GAME_OVER_MSG_0:   DB   "           ",0   
+0317   20 47 41 4D 45 20 4F 56 45 52 20 00 GAME_OVER_MSG_1:   DB   " GAME OVER ",0   
+0323   20 20 20 20 20 20 20 20 20 20 20 00 GAME_OVER_MSG_2:   DB   "           ",0   
+032F                             ; --- characters set ---
+032F                             ; ref.: https://github.com/dhepper/font8x8/blob/master/font8x8_basic.h
+032F                FONT8X8_BASIC:      
+032F   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0000
+0337   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0001
+033F   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0002
+0347   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0003
+034F   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0004
+0357   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0005
+035F   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0006
+0367   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0007
+036F   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0008
+0377   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0009
+037F   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+000A
+0387   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+000B
+038F   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+000C
+0397   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+000D
+039F   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+000E
+03A7   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+000F
+03AF   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0010
+03B7   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0011
+03BF   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0012
+03C7   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0013
+03CF   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0014
+03D7   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0015
+03DF   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0016
+03E7   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0017
+03EF   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0018
+03F7   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0019
+03FF   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+001A
+0407   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+001B
+040F   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+001C
+0417   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+001D
+041F   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+001E
+0427   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+001F
+042F   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0020
+0437   18 3C 3C 18 18 00 18 00 DB   0x18,0x3c,0x3c,0x18,0x18,0x00,0x18,0x00   ; U+0021
+043F   6C 6C 00 00 00 00 00 00 DB   0x6c,0x6c,0x00,0x00,0x00,0x00,0x00,0x00   ; U+0022
+0447   6C 6C FE 6C FE 6C 6C 00 DB   0x6c,0x6c,0xfe,0x6c,0xfe,0x6c,0x6c,0x00   ; U+0023
+044F   30 7C C0 78 0C F8 30 00 DB   0x30,0x7c,0xc0,0x78,0x0c,0xf8,0x30,0x00   ; U+0024
+0457   00 C6 CC 18 30 66 C6 00 DB   0x00,0xc6,0xcc,0x18,0x30,0x66,0xc6,0x00   ; U+0025
+045F   38 6C 38 76 DC CC 76 00 DB   0x38,0x6c,0x38,0x76,0xdc,0xcc,0x76,0x00   ; U+0026
+0467   60 60 C0 00 00 00 00 00 DB   0x60,0x60,0xc0,0x00,0x00,0x00,0x00,0x00   ; U+0027
+046F   18 30 60 60 60 30 18 00 DB   0x18,0x30,0x60,0x60,0x60,0x30,0x18,0x00   ; U+0028
+0477   60 30 18 18 18 30 60 00 DB   0x60,0x30,0x18,0x18,0x18,0x30,0x60,0x00   ; U+0029
+047F   00 66 3C FF 3C 66 00 00 DB   0x00,0x66,0x3c,0xff,0x3c,0x66,0x00,0x00   ; U+002A
+0487   00 30 30 FC 30 30 00 00 DB   0x00,0x30,0x30,0xfc,0x30,0x30,0x00,0x00   ; U+002B
+048F   00 00 00 00 00 30 30 60 DB   0x00,0x00,0x00,0x00,0x00,0x30,0x30,0x60   ; U+002C
+0497   00 00 00 FC 00 00 00 00 DB   0x00,0x00,0x00,0xfc,0x00,0x00,0x00,0x00   ; U+002D
+049F   00 00 00 00 00 30 30 00 DB   0x00,0x00,0x00,0x00,0x00,0x30,0x30,0x00   ; U+002E
+04A7   06 0C 18 30 60 C0 80 00 DB   0x06,0x0c,0x18,0x30,0x60,0xc0,0x80,0x00   ; U+002F
+04AF   7C C6 CE DE F6 E6 7C 00 DB   0x7c,0xc6,0xce,0xde,0xf6,0xe6,0x7c,0x00   ; U+0030
+04B7   30 70 30 30 30 30 FC 00 DB   0x30,0x70,0x30,0x30,0x30,0x30,0xfc,0x00   ; U+0031
+04BF   78 CC 0C 38 60 CC FC 00 DB   0x78,0xcc,0x0c,0x38,0x60,0xcc,0xfc,0x00   ; U+0032
+04C7   78 CC 0C 38 0C CC 78 00 DB   0x78,0xcc,0x0c,0x38,0x0c,0xcc,0x78,0x00   ; U+0033
+04CF   1C 3C 6C CC FE 0C 1E 00 DB   0x1c,0x3c,0x6c,0xcc,0xfe,0x0c,0x1e,0x00   ; U+0034
+04D7   FC C0 F8 0C 0C CC 78 00 DB   0xfc,0xc0,0xf8,0x0c,0x0c,0xcc,0x78,0x00   ; U+0035
+04DF   38 60 C0 F8 CC CC 78 00 DB   0x38,0x60,0xc0,0xf8,0xcc,0xcc,0x78,0x00   ; U+0036
+04E7   FC CC 0C 18 30 30 30 00 DB   0xfc,0xcc,0x0c,0x18,0x30,0x30,0x30,0x00   ; U+0037
+04EF   78 CC CC 78 CC CC 78 00 DB   0x78,0xcc,0xcc,0x78,0xcc,0xcc,0x78,0x00   ; U+0038
+04F7   78 CC CC 7C 0C 18 70 00 DB   0x78,0xcc,0xcc,0x7c,0x0c,0x18,0x70,0x00   ; U+0039
+04FF   00 30 30 00 00 30 30 00 DB   0x00,0x30,0x30,0x00,0x00,0x30,0x30,0x00   ; U+003A
+0507   00 30 30 00 00 30 30 60 DB   0x00,0x30,0x30,0x00,0x00,0x30,0x30,0x60   ; U+003B
+050F   18 30 60 C0 60 30 18 00 DB   0x18,0x30,0x60,0xc0,0x60,0x30,0x18,0x00   ; U+003C
+0517   00 00 FC 00 00 FC 00 00 DB   0x00,0x00,0xfc,0x00,0x00,0xfc,0x00,0x00   ; U+003D
+051F   60 30 18 0C 18 30 60 00 DB   0x60,0x30,0x18,0x0c,0x18,0x30,0x60,0x00   ; U+003E
+0527   78 CC 0C 18 30 00 30 00 DB   0x78,0xcc,0x0c,0x18,0x30,0x00,0x30,0x00   ; U+003F
+052F   7C C6 DE DE DE C0 78 00 DB   0x7c,0xc6,0xde,0xde,0xde,0xc0,0x78,0x00   ; U+0040
+0537   30 78 CC CC FC CC CC 00 DB   0x30,0x78,0xcc,0xcc,0xfc,0xcc,0xcc,0x00   ; U+0041
+053F   FC 66 66 7C 66 66 FC 00 DB   0xfc,0x66,0x66,0x7c,0x66,0x66,0xfc,0x00   ; U+0042
+0547   3C 66 C0 C0 C0 66 3C 00 DB   0x3c,0x66,0xc0,0xc0,0xc0,0x66,0x3c,0x00   ; U+0043
+054F   F8 6C 66 66 66 6C F8 00 DB   0xf8,0x6c,0x66,0x66,0x66,0x6c,0xf8,0x00   ; U+0044
+0557   FE 62 68 78 68 62 FE 00 DB   0xfe,0x62,0x68,0x78,0x68,0x62,0xfe,0x00   ; U+0045
+055F   FE 62 68 78 68 60 F0 00 DB   0xfe,0x62,0x68,0x78,0x68,0x60,0xf0,0x00   ; U+0046
+0567   3C 66 C0 C0 CE 66 3E 00 DB   0x3c,0x66,0xc0,0xc0,0xce,0x66,0x3e,0x00   ; U+0047
+056F   CC CC CC FC CC CC CC 00 DB   0xcc,0xcc,0xcc,0xfc,0xcc,0xcc,0xcc,0x00   ; U+0048
+0577   78 30 30 30 30 30 78 00 DB   0x78,0x30,0x30,0x30,0x30,0x30,0x78,0x00   ; U+0049
+057F   1E 0C 0C 0C CC CC 78 00 DB   0x1e,0x0c,0x0c,0x0c,0xcc,0xcc,0x78,0x00   ; U+004A
+0587   E6 66 6C 78 6C 66 E6 00 DB   0xe6,0x66,0x6c,0x78,0x6c,0x66,0xe6,0x00   ; U+004B
+058F   F0 60 60 60 62 66 FE 00 DB   0xf0,0x60,0x60,0x60,0x62,0x66,0xfe,0x00   ; U+004C
+0597   C6 EE FE FE D6 C6 C6 00 DB   0xc6,0xee,0xfe,0xfe,0xd6,0xc6,0xc6,0x00   ; U+004D
+059F   C6 E6 F6 DE CE C6 C6 00 DB   0xc6,0xe6,0xf6,0xde,0xce,0xc6,0xc6,0x00   ; U+004E
+05A7   38 6C C6 C6 C6 6C 38 00 DB   0x38,0x6c,0xc6,0xc6,0xc6,0x6c,0x38,0x00   ; U+004F
+05AF   FC 66 66 7C 60 60 F0 00 DB   0xfc,0x66,0x66,0x7c,0x60,0x60,0xf0,0x00   ; U+0050
+05B7   78 CC CC CC DC 78 1C 00 DB   0x78,0xcc,0xcc,0xcc,0xdc,0x78,0x1c,0x00   ; U+0051
+05BF   FC 66 66 7C 6C 66 E6 00 DB   0xfc,0x66,0x66,0x7c,0x6c,0x66,0xe6,0x00   ; U+0052
+05C7   78 CC E0 70 1C CC 78 00 DB   0x78,0xcc,0xe0,0x70,0x1c,0xcc,0x78,0x00   ; U+0053
+05CF   FC B4 30 30 30 30 78 00 DB   0xfc,0xb4,0x30,0x30,0x30,0x30,0x78,0x00   ; U+0054
+05D7   CC CC CC CC CC CC FC 00 DB   0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xfc,0x00   ; U+0055
+05DF   CC CC CC CC CC 78 30 00 DB   0xcc,0xcc,0xcc,0xcc,0xcc,0x78,0x30,0x00   ; U+0056
+05E7   C6 C6 C6 D6 FE EE C6 00 DB   0xc6,0xc6,0xc6,0xd6,0xfe,0xee,0xc6,0x00   ; U+0057
+05EF   C6 C6 6C 38 38 6C C6 00 DB   0xc6,0xc6,0x6c,0x38,0x38,0x6c,0xc6,0x00   ; U+0058
+05F7   CC CC CC 78 30 30 78 00 DB   0xcc,0xcc,0xcc,0x78,0x30,0x30,0x78,0x00   ; U+0059
+05FF   FE C6 8C 18 32 66 FE 00 DB   0xfe,0xc6,0x8c,0x18,0x32,0x66,0xfe,0x00   ; U+005A
+0607   78 60 60 60 60 60 78 00 DB   0x78,0x60,0x60,0x60,0x60,0x60,0x78,0x00   ; U+005B
+060F   C0 60 30 18 0C 06 02 00 DB   0xc0,0x60,0x30,0x18,0x0c,0x06,0x02,0x00   ; U+005C
+0617   78 18 18 18 18 18 78 00 DB   0x78,0x18,0x18,0x18,0x18,0x18,0x78,0x00   ; U+005D
+061F   10 38 6C C6 00 00 00 00 DB   0x10,0x38,0x6c,0xc6,0x00,0x00,0x00,0x00   ; U+005E
+0627   00 00 00 00 00 00 00 FF DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xff   ; U+005F
+062F   30 30 18 00 00 00 00 00 DB   0x30,0x30,0x18,0x00,0x00,0x00,0x00,0x00   ; U+0060
+0637   00 00 78 0C 7C CC 76 00 DB   0x00,0x00,0x78,0x0c,0x7c,0xcc,0x76,0x00   ; U+0061
+063F   E0 60 60 7C 66 66 DC 00 DB   0xe0,0x60,0x60,0x7c,0x66,0x66,0xdc,0x00   ; U+0062
+0647   00 00 78 CC C0 CC 78 00 DB   0x00,0x00,0x78,0xcc,0xc0,0xcc,0x78,0x00   ; U+0063
+064F   1C 0C 0C 7C CC CC 76 00 DB   0x1c,0x0c,0x0c,0x7c,0xcc,0xcc,0x76,0x00   ; U+0064
+0657   00 00 78 CC FC C0 78 00 DB   0x00,0x00,0x78,0xcc,0xfc,0xc0,0x78,0x00   ; U+0065
+065F   38 6C 60 F0 60 60 F0 00 DB   0x38,0x6c,0x60,0xf0,0x60,0x60,0xf0,0x00   ; U+0066
+0667   00 00 76 CC CC 7C 0C F8 DB   0x00,0x00,0x76,0xcc,0xcc,0x7c,0x0c,0xf8   ; U+0067
+066F   E0 60 6C 76 66 66 E6 00 DB   0xe0,0x60,0x6c,0x76,0x66,0x66,0xe6,0x00   ; U+0068
+0677   30 00 70 30 30 30 78 00 DB   0x30,0x00,0x70,0x30,0x30,0x30,0x78,0x00   ; U+0069
+067F   0C 00 0C 0C 0C CC CC 78 DB   0x0c,0x00,0x0c,0x0c,0x0c,0xcc,0xcc,0x78   ; U+006A
+0687   E0 60 66 6C 78 6C E6 00 DB   0xe0,0x60,0x66,0x6c,0x78,0x6c,0xe6,0x00   ; U+006B
+068F   70 30 30 30 30 30 78 00 DB   0x70,0x30,0x30,0x30,0x30,0x30,0x78,0x00   ; U+006C
+0697   00 00 CC FE FE D6 C6 00 DB   0x00,0x00,0xcc,0xfe,0xfe,0xd6,0xc6,0x00   ; U+006D
+069F   00 00 F8 CC CC CC CC 00 DB   0x00,0x00,0xf8,0xcc,0xcc,0xcc,0xcc,0x00   ; U+006E
+06A7   00 00 78 CC CC CC 78 00 DB   0x00,0x00,0x78,0xcc,0xcc,0xcc,0x78,0x00   ; U+006F
+06AF   00 00 DC 66 66 7C 60 F0 DB   0x00,0x00,0xdc,0x66,0x66,0x7c,0x60,0xf0   ; U+0070
+06B7   00 00 76 CC CC 7C 0C 1E DB   0x00,0x00,0x76,0xcc,0xcc,0x7c,0x0c,0x1e   ; U+0071
+06BF   00 00 DC 76 66 60 F0 00 DB   0x00,0x00,0xdc,0x76,0x66,0x60,0xf0,0x00   ; U+0072
+06C7   00 00 7C C0 78 0C F8 00 DB   0x00,0x00,0x7c,0xc0,0x78,0x0c,0xf8,0x00   ; U+0073
+06CF   10 30 7C 30 30 34 18 00 DB   0x10,0x30,0x7c,0x30,0x30,0x34,0x18,0x00   ; U+0074
+06D7   00 00 CC CC CC CC 76 00 DB   0x00,0x00,0xcc,0xcc,0xcc,0xcc,0x76,0x00   ; U+0075
+06DF   00 00 CC CC CC 78 30 00 DB   0x00,0x00,0xcc,0xcc,0xcc,0x78,0x30,0x00   ; U+0076
+06E7   00 00 C6 D6 FE FE 6C 00 DB   0x00,0x00,0xc6,0xd6,0xfe,0xfe,0x6c,0x00   ; U+0077
+06EF   00 00 C6 6C 38 6C C6 00 DB   0x00,0x00,0xc6,0x6c,0x38,0x6c,0xc6,0x00   ; U+0078
+06F7   00 00 CC CC CC 7C 0C F8 DB   0x00,0x00,0xcc,0xcc,0xcc,0x7c,0x0c,0xf8   ; U+0079
+06FF   00 00 FC 98 30 64 FC 00 DB   0x00,0x00,0xfc,0x98,0x30,0x64,0xfc,0x00   ; U+007A
+0707   1C 30 30 E0 30 30 1C 00 DB   0x1c,0x30,0x30,0xe0,0x30,0x30,0x1c,0x00   ; U+007B
+070F   18 18 18 00 18 18 18 00 DB   0x18,0x18,0x18,0x00,0x18,0x18,0x18,0x00   ; U+007C
+0717   E0 30 30 1C 30 30 E0 00 DB   0xe0,0x30,0x30,0x1c,0x30,0x30,0xe0,0x00   ; U+007D
+071F   76 DC 00 00 00 00 00 00 DB   0x76,0xdc,0x00,0x00,0x00,0x00,0x00,0x00   ; U+007E
+0727   00 00 00 00 00 00 00 00 DB   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00   ; U+007F
+072F                             ; snake body 0x80
+072F   3C                     DB   00111100b   
+0730   7E                     DB   01111110b   
+0731   E7                     DB   11100111b   
+0732   C3                     DB   11000011b   
+0733   C3                     DB   11000011b   
+0734   E7                     DB   11100111b   
+0735   7E                     DB   01111110b   
+0736   3C                     DB   00111100b   
+0737                             ; food 0x81
+0737   00                     DB   00000000b   
+0738   3C                     DB   00111100b   
+0739   7E                     DB   01111110b   
+073A   7E                     DB   01111110b   
+073B   7E                     DB   01111110b   
+073C   7E                     DB   01111110b   
+073D   3C                     DB   00111100b   
+073E   00                     DB   00000000b   
+073F                             ; --- LCD subroutines ---
+073F                LCD_INIT:      
+073F   3E 30                  LD   a,0x30   
+0741   CD 77 07               CALL   lcd_send_cmd   
+0744   3E 01                  LD   a,0x01   
+0746   CD 77 07               CALL   lcd_send_cmd   
+0749   3E 02                  LD   a,0x02   
+074B   CD 77 07               CALL   lcd_send_cmd   
+074E   3E 04                  LD   a,0x04   
+0750   CD 77 07               CALL   lcd_send_cmd   
+0753   3E 06                  LD   a,0x06   
+0755   CD 77 07               CALL   lcd_send_cmd   
+0758   3E 0C                  LD   a,0x0c   
+075A   CD 77 07               CALL   lcd_send_cmd   
+075D   3E 10                  LD   a,0x10   
+075F   CD 77 07               CALL   lcd_send_cmd   
+0762   3E 40                  LD   a,0x40   
+0764   CD 77 07               CALL   lcd_send_cmd   
+0767   3E 80                  LD   a,0x80   
+0769   CD 77 07               CALL   lcd_send_cmd   
+076C   3E 34                  LD   a,0x34   ; extended instructions
+076E   CD 77 07               CALL   lcd_send_cmd   
+0771   3E 36                  LD   a,0x36   ; enable graphics
+0773   CD 77 07               CALL   lcd_send_cmd   
+0776   C9                     RET      
+0777                LCD_SEND_CMD:      
+0777   D3 FE                  OUT   (PORT_LCD_DATA),a   
+0779                             ; send E pulse
+0779   3E 0C                  LD   a,00001100b   
+077B   D3 FD                  OUT   (PORT_LCD_CTR),a   
+077D   3E 08                  LD   a,00001000b   
+077F   D3 FD                  OUT   (PORT_LCD_CTR),a   
+0781   C9                     RET      
+0782                LCD_SEND_DATA:      
+0782   D3 FE                  OUT   (PORT_LCD_DATA),a   
+0784                             ; send E pulse
+0784   3E 0D                  LD   a,00001101b   
+0786   D3 FD                  OUT   (PORT_LCD_CTR),a   
+0788   3E 09                  LD   a,00001001b   
+078A   D3 FD                  OUT   (PORT_LCD_CTR),a   
+078C   C9                     RET      
+078D                             ; cd = fill pattern
+078D                LCD_FILL_SCREEN:      
+078D   06 20                  LD   b,0x20   
+078F                LCD_FILL_SCREEN_NEXT_Y:      
+078F   3E 7F                  LD   a,0x7f   
+0791   80                     ADD   a,b   
+0792   CD 77 07               CALL   lcd_send_cmd   
+0795   3E 80                  LD   a,0x80   
+0797   CD 77 07               CALL   lcd_send_cmd   
+079A   C5                     PUSH   bc   
+079B   06 10                  LD   b,0x10   
+079D                LCD_FILL_SCREEN_NEXT_X:      
+079D   F5                     PUSH   af   
+079E   79                     LD   a,c   
+079F   CD 82 07               CALL   lcd_send_data   
+07A2   7A                     LD   a,d   
+07A3   CD 82 07               CALL   lcd_send_data   
+07A6   F1                     POP   af   
+07A7   10 F4                  DJNZ   lcd_fill_screen_next_x   
+07A9   C1                     POP   bc   
+07AA   10 E3                  DJNZ   lcd_fill_screen_next_y   
+07AC   C9                     RET      
+07AD                             ; ------------ CHARS BUFFER ---
+07AD                             ; 16x8 pixels -> 128 bytes on ram
+07AD                LCD_CLEAR_CHARS_BUFFER:      
+07AD   3E 00                  LD   a,0   
+07AF   21 00 20               LD   hl,CHARS_BUFFER   
+07B2   06 08                  LD   b,8   
+07B4   16 00                  LD   d,0   
+07B6                LCD_CLEAR_CHARS_BUFFER_NEXT_Y:      
+07B6   C5                     PUSH   bc   
+07B7   1E 00                  LD   e,0   
+07B9   06 10                  LD   b,16   
+07BB                LCD_CLEAR_CHARS_BUFFER_NEXT_X:      
+07BB   12                     LD   (de),a   
+07BC   1C                     INC   e   
+07BD   10 FC                  DJNZ   lcd_clear_chars_buffer_next_x   
+07BF   C1                     POP   bc   
+07C0   14                     INC   d   
+07C1   10 F3                  DJNZ   lcd_clear_chars_buffer_next_y   
+07C3   C9                     RET      
+07C4                             ; draw 8x8 char on lcd
+07C4                             ; b = y
+07C4                             ; c = x
+07C4                             ; a = char ascii code
+07C4                LCD_PUT_CHAR:      
+07C4   F5                     PUSH   af   
+07C5   C5                     PUSH   bc   
+07C6   E5                     PUSH   hl   
+07C7                             ; first update pixel on ram buffer
+07C7   21 00 20               LD   hl,CHARS_BUFFER   
+07CA   09                     ADD   hl,bc   
+07CB   77                     LD   (hl),a   
+07CC                             ; calculate lcd address
+07CC                             ; lcd_x = ((y & 4) << 1) + (x >> 1)
+07CC                             ; lcd_y = (y & 3) << 3
+07CC   78                     LD   a,b   
+07CD   E6 04                  AND   4   
+07CF   CB 27                  SLA   a   
+07D1   57                     LD   d,a   
+07D2   79                     LD   a,c   
+07D3   CB 2F                  SRA   a   
+07D5   82                     ADD   a,d   
+07D6   57                     LD   d,a   ; d = lcd_x
+07D7   78                     LD   a,b   
+07D8   E6 03                  AND   3   
+07DA   CB 27                  SLA   a   
+07DC   CB 27                  SLA   a   
+07DE   CB 27                  SLA   a   
+07E0   5F                     LD   e,a   ; e = lcd_y
+07E1                             ; draw pixels on LCD
+07E1   06 08                  LD   b,0x8   ; draw vertical 8 pixels
+07E3                LCD_PUT_CHAR_NEXT_Y:      
+07E3   3E 7F                  LD   a,0x7f   
+07E5   83                     ADD   a,e   
+07E6   80                     ADD   a,b   
+07E7   CD 77 07               CALL   lcd_send_cmd   
+07EA   3E 80                  LD   a,0x80   
+07EC   82                     ADD   a,d   
+07ED   CD 77 07               CALL   lcd_send_cmd   
+07F0   7D                     LD   a,l   
+07F1   E6 FE                  AND   11111110b   
+07F3   6F                     LD   l,a   
+07F4   7E                     LD   a,(hl)   ; a = ascii code
+07F5                             ; convert ascii code and line number to char pixels
+07F5   E5                     PUSH   hl   
+07F6   D5                     PUSH   de   
+07F7   C5                     PUSH   bc   
+07F8   01 00 00               LD   bc,0   
+07FB   4F                     LD   c,a   
+07FC   CB 21                  SLA   c   
+07FE   CB 10                  RL   b   
+0800   CB 21                  SLA   c   
+0802   CB 10                  RL   b   
+0804   CB 21                  SLA   c   
+0806   CB 10                  RL   b   
+0808   21 2F 03               LD   hl,font8x8_basic   
+080B   09                     ADD   hl,bc   
+080C   C1                     POP   bc   
+080D   11 00 00               LD   de,0   
+0810   58                     LD   e,b   
+0811   1D                     DEC   e   
+0812   19                     ADD   hl,de   
+0813   7E                     LD   a,(hl)   
+0814   CD 82 07               CALL   lcd_send_data   
+0817   D1                     POP   de   
+0818   E1                     POP   hl   
+0819   7D                     LD   a,l   
+081A   F6 01                  OR   00000001b   
+081C   6F                     LD   l,a   
+081D   7E                     LD   a,(hl)   ; a = ascii code
+081E                             ; convert ascii code and line number to char pixels
+081E   E5                     PUSH   hl   
+081F   D5                     PUSH   de   
+0820   C5                     PUSH   bc   
+0821   01 00 00               LD   bc,0   
+0824   4F                     LD   c,a   
+0825   CB 21                  SLA   c   
+0827   CB 10                  RL   b   
+0829   CB 21                  SLA   c   
+082B   CB 10                  RL   b   
+082D   CB 21                  SLA   c   
+082F   CB 10                  RL   b   
+0831   21 2F 03               LD   hl,font8x8_basic   
+0834   09                     ADD   hl,bc   
+0835   C1                     POP   bc   
+0836   11 00 00               LD   de,0   
+0839   58                     LD   e,b   
+083A   1D                     DEC   e   
+083B   19                     ADD   hl,de   
+083C   7E                     LD   a,(hl)   
+083D   CD 82 07               CALL   lcd_send_data   
+0840   D1                     POP   de   
+0841   E1                     POP   hl   
+0842   10 9F                  DJNZ   lcd_put_char_next_y   
+0844   E1                     POP   hl   
+0845   C1                     POP   bc   
+0846   F1                     POP   af   
+0847   C9                     RET      
+0848                             ; draw string terminated with 0 on lcd
+0848                             ; b = y
+0848                             ; c = x
+0848                             ; hl = string address terminated with 0
+0848                LCD_PRINT_STR:      
+0848                LCD_PRINT_STR_NEXT_CHAR:      
+0848   7E                     LD   a,(hl)   
+0849   FE 00                  CP   0   
+084B   CA 56 08               JP   z,lcd_print_str_end   
+084E                             ; draw 8x8 char on lcd
+084E                             ; b = y
+084E                             ; c = x
+084E                             ; a = char ascii code
+084E   CD C4 07               CALL   lcd_put_char   
+0851   0C                     INC   c   
+0852   23                     INC   hl   
+0853   C3 48 08               JP   lcd_print_str_next_char   
+0856                LCD_PRINT_STR_END:      
+0856   C9                     RET      
+
+
+ROM_START:          0000 DEFINED AT LINE 5
+RAM_START:          2000 DEFINED AT LINE 6
+                    > USED AT LINE 11
+                    > USED AT LINE 12
+                    > USED AT LINE 13
+                    > USED AT LINE 14
+                    > USED AT LINE 15
+                    > USED AT LINE 16
+                    > USED AT LINE 17
+                    > USED AT LINE 18
+                    > USED AT LINE 19
+                    > USED AT LINE 20
+                    > USED AT LINE 28
+PORT_LCD_DATA:      00FE DEFINED AT LINE 8
+                    > USED AT LINE 733
+                    > USED AT LINE 742
+PORT_LCD_CTR:       00FD DEFINED AT LINE 9
+                    > USED AT LINE 736
+                    > USED AT LINE 738
+                    > USED AT LINE 745
+                    > USED AT LINE 747
+CHARS_BUFFER:       2000 DEFINED AT LINE 11
+                    > USED AT LINE 214
+                    > USED AT LINE 452
+                    > USED AT LINE 786
+                    > USED AT LINE 812
+SNAKE_TAIL_BUFFER:  3100 DEFINED AT LINE 12
+                    > USED AT LINE 232
+                    > USED AT LINE 476
+PLAYER_X:           3000 DEFINED AT LINE 13
+                    > USED AT LINE 128
+                    > USED AT LINE 149
+                    > USED AT LINE 172
+                    > USED AT LINE 174
+                    > USED AT LINE 179
+                    > USED AT LINE 181
+                    > USED AT LINE 201
+                    > USED AT LINE 217
+                    > USED AT LINE 376
+                    > USED AT LINE 479
+PLAYER_Y:           3002 DEFINED AT LINE 14
+                    > USED AT LINE 130
+                    > USED AT LINE 147
+                    > USED AT LINE 186
+                    > USED AT LINE 188
+                    > USED AT LINE 193
+                    > USED AT LINE 195
+                    > USED AT LINE 206
+                    > USED AT LINE 215
+                    > USED AT LINE 374
+                    > USED AT LINE 477
+PLAYER_TAIL_X:      3004 DEFINED AT LINE 15
+                    > USED AT LINE 132
+                    > USED AT LINE 235
+                    > USED AT LINE 254
+                    > USED AT LINE 256
+                    > USED AT LINE 261
+                    > USED AT LINE 263
+                    > USED AT LINE 286
+PLAYER_TAIL_Y:      3006 DEFINED AT LINE 16
+                    > USED AT LINE 134
+                    > USED AT LINE 233
+                    > USED AT LINE 268
+                    > USED AT LINE 270
+                    > USED AT LINE 275
+                    > USED AT LINE 277
+                    > USED AT LINE 284
+PLAYER_DIR:         3008 DEFINED AT LINE 17
+                    > USED AT LINE 136
+                    > USED AT LINE 157
+                    > USED AT LINE 482
+                    > USED AT LINE 510
+                    > USED AT LINE 515
+                    > USED AT LINE 520
+                    > USED AT LINE 525
+R_SEED:             300A DEFINED AT LINE 18
+                    > USED AT LINE 32
+                    > USED AT LINE 90
+                    > USED AT LINE 92
+                    > USED AT LINE 421
+                    > USED AT LINE 427
+                    > USED AT LINE 429
+SCORE:              300C DEFINED AT LINE 19
+                    > USED AT LINE 360
+                    > USED AT LINE 362
+SCORE_MSG_RAM:      300E DEFINED AT LINE 20
+                    > USED AT LINE 112
+                    > USED AT LINE 123
+                    > USED AT LINE 297
+                    > USED AT LINE 299
+                    > USED AT LINE 305
+                    > USED AT LINE 307
+                    > USED AT LINE 309
+                    > USED AT LINE 314
+                    > USED AT LINE 316
+                    > USED AT LINE 318
+                    > USED AT LINE 323
+                    > USED AT LINE 325
+                    > USED AT LINE 327
+                    > USED AT LINE 332
+                    > USED AT LINE 334
+                    > USED AT LINE 336
+                    > USED AT LINE 341
+                    > USED AT LINE 343
+                    > USED AT LINE 345
+                    > USED AT LINE 353
+FOOD_CHAR:          0081 DEFINED AT LINE 22
+                    > USED AT LINE 221
+                    > USED AT LINE 460
+                    > USED AT LINE 468
+SNAKE_BODY_CHAR:    0080 DEFINED AT LINE 23
+                    > USED AT LINE 151
+                    > USED AT LINE 223
+                    > USED AT LINE 378
+                    > USED AT LINE 455
+START:              0000 DEFINED AT LINE 27
+TITLE_SCREEN:       000C DEFINED AT LINE 36
+                    > USED AT LINE 408
+WAIT_PUSH_BUTTON:   0020 DEFINED AT LINE 53
+                    > USED AT LINE 75
+DELAY_PUSH_BUTTON:  004F DEFINED AT LINE 79
+                    > USED AT LINE 59
+                    > USED AT LINE 62
+                    > USED AT LINE 71
+                    > USED AT LINE 404
+DELAY_PUSH_BUTTON_WAIT_A: 0051 DEFINED AT LINE 81
+                    > USED AT LINE 97
+DELAY_PUSH_BUTTON_WAIT_B: 005B DEFINED AT LINE 87
+                    > USED AT LINE 95
+DELAY_PUSH_BUTTON_WAIT_FORCE_EXIT: 0069 DEFINED AT LINE 98
+                    > USED AT LINE 84
+START_GAME:         006A DEFINED AT LINE 101
+                    > USED AT LINE 61
+                    > USED AT LINE 64
+                    > USED AT LINE 73
+RESET_SCORE:        0074 DEFINED AT LINE 108
+COPY_SCORE_MSG_ROM_TO_RAM_NEXT_BYTE: 007C DEFINED AT LINE 113
+                    > USED AT LINE 118
+MAIN_LOOP:          00BB DEFINED AT LINE 154
+                    > USED AT LINE 383
+UPDATE_PLAYER_POSITION: 00BB DEFINED AT LINE 156
+PLAYER_LEFT:        00D5 DEFINED AT LINE 170
+                    > USED AT LINE 160
+PLAYER_RIGHT:       00E2 DEFINED AT LINE 177
+                    > USED AT LINE 162
+PLAYER_UP:          00EF DEFINED AT LINE 184
+                    > USED AT LINE 164
+PLAYER_DOWN:        00FC DEFINED AT LINE 191
+                    > USED AT LINE 166
+UPDATE_TAIL:        0106 DEFINED AT LINE 199
+                    > USED AT LINE 168
+                    > USED AT LINE 175
+                    > USED AT LINE 182
+                    > USED AT LINE 189
+UPDATE_TAIL_GAME_OVER: 0135 DEFINED AT LINE 228
+                    > USED AT LINE 203
+                    > USED AT LINE 205
+                    > USED AT LINE 208
+                    > USED AT LINE 210
+                    > USED AT LINE 224
+NEW_HEAD_POSITION_NOT_IS_FOOD: 0138 DEFINED AT LINE 231
+                    > USED AT LINE 226
+SNAKE_TAIL_LEFT:    015C DEFINED AT LINE 252
+                    > USED AT LINE 242
+SNAKE_TAIL_RIGHT:   0169 DEFINED AT LINE 259
+                    > USED AT LINE 244
+SNAKE_TAIL_UP:      0176 DEFINED AT LINE 266
+                    > USED AT LINE 246
+SNAKE_TAIL_DOWN:    0183 DEFINED AT LINE 273
+                    > USED AT LINE 248
+CLEAR_TAIL_CHAR:    0190 DEFINED AT LINE 280
+                    > USED AT LINE 253
+                    > USED AT LINE 260
+                    > USED AT LINE 267
+                    > USED AT LINE 274
+SHOW_SCORE:         019E DEFINED AT LINE 295
+                    > USED AT LINE 364
+SHOW_SCORE_0:       019E DEFINED AT LINE 296
+SHOW_SCORE_1:       01A9 DEFINED AT LINE 303
+SHOW_SCORE_2:       01B9 DEFINED AT LINE 312
+SHOW_SCORE_3:       01C9 DEFINED AT LINE 321
+SHOW_SCORE_4:       01D9 DEFINED AT LINE 330
+SHOW_SCORE_5:       01E9 DEFINED AT LINE 339
+SHOW_SCORE_EXIT:    01F9 DEFINED AT LINE 349
+                    > USED AT LINE 302
+                    > USED AT LINE 311
+                    > USED AT LINE 320
+                    > USED AT LINE 329
+                    > USED AT LINE 338
+                    > USED AT LINE 347
+NEW_HEAD_POSITION_IS_FOOD: 0204 DEFINED AT LINE 358
+                    > USED AT LINE 222
+MAIN_CONTINUE:      0211 DEFINED AT LINE 368
+                    > USED AT LINE 250
+                    > USED AT LINE 257
+                    > USED AT LINE 264
+                    > USED AT LINE 271
+                    > USED AT LINE 278
+DRAW_NEW_SNAKE_HEAD: 0211 DEFINED AT LINE 370
+GAME_OVER:          0224 DEFINED AT LINE 387
+                    > USED AT LINE 229
+GAME_OVER_WAIT_BUTTON: 0238 DEFINED AT LINE 398
+                    > USED AT LINE 406
+GAME_OVER_BACK_TO_TITLE: 0249 DEFINED AT LINE 407
+GENERATE_RANDOM_NUMBER: 024C DEFINED AT LINE 415
+                    > USED AT LINE 436
+RAND_8:             024C DEFINED AT LINE 420
+NO_CLR:             0256 DEFINED AT LINE 426
+                    > USED AT LINE 424
+CREATE_NEW_FOOD:    025E DEFINED AT LINE 434
+                    > USED AT LINE 139
+                    > USED AT LINE 140
+                    > USED AT LINE 141
+                    > USED AT LINE 366
+CREATE_NEW_FOOD_POSITION_TRY_AGAIN: 025E DEFINED AT LINE 435
+                    > USED AT LINE 447
+                    > USED AT LINE 458
+                    > USED AT LINE 463
+CREATE_NEW_FOOD_POSITION_FREE: 0280 DEFINED AT LINE 465
+UPDATE_TAIL_BUFFER: 0286 DEFINED AT LINE 475
+                    > USED AT LINE 171
+                    > USED AT LINE 178
+                    > USED AT LINE 185
+                    > USED AT LINE 192
+DELAY:              0297 DEFINED AT LINE 487
+                    > USED AT LINE 381
+DELAY_WAIT_A:       0299 DEFINED AT LINE 489
+                    > USED AT LINE 537
+UPDATE_PLAYER_DIR:  029A DEFINED AT LINE 493
+PLAYER_DIR_LEFT:    02B3 DEFINED AT LINE 508
+                    > USED AT LINE 498
+PLAYER_DIR_RIGHT:   02BB DEFINED AT LINE 513
+                    > USED AT LINE 500
+PLAYER_DIR_UP:      02C3 DEFINED AT LINE 518
+                    > USED AT LINE 502
+PLAYER_DIR_DOWN:    02CB DEFINED AT LINE 523
+                    > USED AT LINE 504
+DELAY_CONTINUE:     02D0 DEFINED AT LINE 527
+                    > USED AT LINE 506
+                    > USED AT LINE 511
+                    > USED AT LINE 516
+                    > USED AT LINE 521
+DELAY_WAIT_B:       02D2 DEFINED AT LINE 531
+                    > USED AT LINE 535
+TITLE_MSG:          02DB DEFINED AT LINE 542
+                    > USED AT LINE 50
+PUSH_BUTTON_MSG:    02E5 DEFINED AT LINE 543
+                    > USED AT LINE 56
+PUSH_BUTTON_CLR_MSG: 02F1 DEFINED AT LINE 544
+                    > USED AT LINE 68
+SCORE_MSG:          02FD DEFINED AT LINE 545
+                    > USED AT LINE 111
+GAME_OVER_MSG_0:    030B DEFINED AT LINE 547
+                    > USED AT LINE 391
+GAME_OVER_MSG_1:    0317 DEFINED AT LINE 548
+                    > USED AT LINE 395
+GAME_OVER_MSG_2:    0323 DEFINED AT LINE 549
+                    > USED AT LINE 401
+FONT8X8_BASIC:      032F DEFINED AT LINE 554
+                    > USED AT LINE 865
+                    > USED AT LINE 894
+LCD_INIT:           073F DEFINED AT LINE 707
+                    > USED AT LINE 34
+LCD_SEND_CMD:       0777 DEFINED AT LINE 732
+                    > USED AT LINE 709
+                    > USED AT LINE 711
+                    > USED AT LINE 713
+                    > USED AT LINE 715
+                    > USED AT LINE 717
+                    > USED AT LINE 719
+                    > USED AT LINE 721
+                    > USED AT LINE 723
+                    > USED AT LINE 725
+                    > USED AT LINE 727
+                    > USED AT LINE 729
+                    > USED AT LINE 757
+                    > USED AT LINE 759
+                    > USED AT LINE 843
+                    > USED AT LINE 846
+LCD_SEND_DATA:      0782 DEFINED AT LINE 741
+                    > USED AT LINE 768
+                    > USED AT LINE 770
+                    > USED AT LINE 873
+                    > USED AT LINE 902
+LCD_FILL_SCREEN:    078D DEFINED AT LINE 751
+                    > USED AT LINE 40
+                    > USED AT LINE 105
+LCD_FILL_SCREEN_NEXT_Y: 078F DEFINED AT LINE 754
+                    > USED AT LINE 777
+LCD_FILL_SCREEN_NEXT_X: 079D DEFINED AT LINE 765
+                    > USED AT LINE 773
+LCD_CLEAR_CHARS_BUFFER: 07AD DEFINED AT LINE 784
+                    > USED AT LINE 41
+                    > USED AT LINE 106
+LCD_CLEAR_CHARS_BUFFER_NEXT_Y: 07B6 DEFINED AT LINE 789
+                    > USED AT LINE 799
+LCD_CLEAR_CHARS_BUFFER_NEXT_X: 07BB DEFINED AT LINE 793
+                    > USED AT LINE 796
+LCD_PUT_CHAR:       07C4 DEFINED AT LINE 806
+                    > USED AT LINE 152
+                    > USED AT LINE 289
+                    > USED AT LINE 379
+                    > USED AT LINE 469
+                    > USED AT LINE 926
+LCD_PUT_CHAR_NEXT_Y: 07E3 DEFINED AT LINE 839
+                    > USED AT LINE 906
+LCD_PRINT_STR:      0848 DEFINED AT LINE 917
+                    > USED AT LINE 51
+                    > USED AT LINE 57
+                    > USED AT LINE 69
+                    > USED AT LINE 124
+                    > USED AT LINE 354
+                    > USED AT LINE 392
+                    > USED AT LINE 396
+                    > USED AT LINE 402
+LCD_PRINT_STR_NEXT_CHAR: 0848 DEFINED AT LINE 918
+                    > USED AT LINE 929
+LCD_PRINT_STR_END:  0856 DEFINED AT LINE 930
+                    > USED AT LINE 921

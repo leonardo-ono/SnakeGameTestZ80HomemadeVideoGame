@@ -1,0 +1,909 @@
+
+; refs:
+; https://map.grauw.nl/resources/z80instr.php
+
+ROM_START     = 0x0000
+RAM_START     = 0x2000
+
+PORT_LCD_DATA = 11111110b
+PORT_LCD_CTR  = 11111101b
+
+CHARS_BUFFER        = (RAM_START + 0x0000)
+SNAKE_TAIL_BUFFER   = (RAM_START + 0x1100)
+PLAYER_X            = (RAM_START + 0x1000)
+PLAYER_Y            = (RAM_START + 0x1002)
+PLAYER_TAIL_X       = (RAM_START + 0x1004)
+PLAYER_TAIL_Y       = (RAM_START + 0x1006)
+PLAYER_DIR          = (RAM_START + 0x1008) ; 1=left 2=right 4=up 8=down
+r_seed              = (RAM_START + 0x100a)
+SCORE               = (RAM_START + 0x100c)
+SCORE_MSG_RAM       = (RAM_START + 0x100e)
+
+    org 0x0000
+    
+start:
+    ld sp, (RAM_START + 0x1fff) ; init stack at end of ram
+    
+    ; set initial random seed
+    ld a, 0xb9
+    ld (r_seed), a
+
+    call lcd_init
+    
+title_screen:
+    ; clear screen
+    ld c, 0
+    ld d, 0
+    call lcd_fill_screen
+    call lcd_clear_chars_buffer
+
+    
+    ; draw string terminated with 0 on lcd
+    ; b = y
+    ; c = x
+    ; hl = string address terminated with 0
+    ld b, 2
+    ld c, 3
+    ld hl, title_msg
+    call lcd_print_str
+
+wait_push_button:
+    ld b, 5
+    ld c, 2
+    ld hl, push_button_msg
+    call lcd_print_str
+
+    call delay_push_button
+    bit 4, a
+    jp z, start_game
+    call delay_push_button
+    bit 4, a
+    jp z, start_game
+
+    ld b, 5
+    ld c, 2
+    ld hl, push_button_clr_msg
+    call lcd_print_str
+
+    call delay_push_button
+    bit 4, a
+    jp z, start_game
+    
+    jp wait_push_button
+    
+
+; return a=input
+delay_push_button:
+        ld b, 0x10
+    delay_push_button_wait_a:
+        in a, (0) ; read input
+        bit 4, a
+        jp z, delay_push_button_wait_force_exit
+        push bc
+        ld b, 0xff
+    delay_push_button_wait_b:
+        ; reuse this delay routine to change random seed
+        push af
+        ld a, (r_seed)
+        inc a
+        ld (r_seed), a
+        pop af
+        
+        djnz delay_push_button_wait_b
+        pop bc
+        djnz delay_push_button_wait_a
+    delay_push_button_wait_force_exit:
+        ret
+
+start_game:
+    ; clear screen
+    ld c, 0
+    ld d, 0
+    call lcd_fill_screen
+    call lcd_clear_chars_buffer
+    
+reset_score:
+        ; copy score_msg from ROM to RAM
+        ld b, 14
+        ld hl, score_msg ; src
+        ld de, SCORE_MSG_RAM ; dest
+    copy_score_msg_rom_to_ram_next_byte:
+        ld a, (hl)
+        ld (de), a
+        inc hl
+        inc de
+        djnz copy_score_msg_rom_to_ram_next_byte
+        
+    ; show score hud
+    ld b, 0
+    ld c, 0
+    ld hl, SCORE_MSG_RAM
+    call lcd_print_str
+
+    ; reset player position
+    ld a, 7
+    ld (PLAYER_X), a
+    ld a, 4
+    ld (PLAYER_Y), a
+    ld a, 7
+    ld (PLAYER_TAIL_X), a
+    ld a, 4
+    ld (PLAYER_TAIL_Y), a
+    ld a, 0x0d ; right
+    ld (PLAYER_DIR), a
+    
+    ; create 3 initial foods
+    call create_new_food
+    call create_new_food
+    call create_new_food
+
+    ; draw initial snake head
+    ; b = y
+    ; c = x
+    ; a = 0 or 1 
+    ld a, (PLAYER_Y)
+    ld b, a
+    ld a, (PLAYER_X)
+    ld c, a
+    ld a, 'O'
+    call lcd_put_char
+    
+main_loop:
+    
+update_player_position:
+    ld a, (PLAYER_DIR)
+    
+    bit 0, a
+    jp z, player_left
+    bit 1, a
+    jp z, player_right
+    bit 2, a
+    jp z, player_up
+    bit 3, a
+    jp z, player_down
+
+    jp update_tail
+
+player_left:
+    call update_tail_buffer
+    ld a, (PLAYER_X)
+    dec a
+    ld (PLAYER_X), a
+    jp update_tail
+
+player_right:
+    call update_tail_buffer
+    ld a, (PLAYER_X)
+    inc a
+    ld (PLAYER_X), a
+    jp update_tail
+
+player_up:
+    call update_tail_buffer
+    ld a, (PLAYER_Y)
+    dec a
+    ld (PLAYER_Y), a
+    jp update_tail
+
+player_down:
+    call update_tail_buffer
+    ld a, (PLAYER_Y)
+    inc a
+    ld (PLAYER_Y), a
+
+
+; ---------------------------
+update_tail:
+    ; check if new player position is valid (is game over?)
+    ld a, (PLAYER_X)
+    cp 255
+    jr z, update_tail_game_over
+    cp 16
+    jr z, update_tail_game_over
+    ld a, (PLAYER_Y)
+    cp 0
+    jr z, update_tail_game_over
+    cp 8
+    jr z, update_tail_game_over
+    
+    
+    ; check new head position has food
+    ld hl, CHARS_BUFFER
+    ld a, (PLAYER_Y)
+    ld b, a
+    ld a, (PLAYER_X)
+    ld c, a
+    add hl, bc
+    ld a, (hl)
+    cp '*' ; is food?
+    jp z, new_head_position_is_food
+    cp 'O' ; is snake body?
+    jr z, update_tail_game_over
+    
+    jp new_head_position_not_is_food
+
+update_tail_game_over:
+    jp game_over
+
+new_head_position_not_is_food:
+    ld hl, SNAKE_TAIL_BUFFER
+    ld a, (PLAYER_TAIL_Y)
+    ld b, a
+    ld a, (PLAYER_TAIL_X)
+    ld c, a
+    add hl, bc
+    ld a, (hl)    
+        
+    ; --- update tail position ---
+        bit 0, a
+        jp z, snake_tail_left
+        bit 1, a
+        jp z, snake_tail_right
+        bit 2, a
+        jp z, snake_tail_up
+        bit 3, a
+        jp z, snake_tail_down
+        
+        jp main_continue
+    
+        snake_tail_left:
+            call clear_tail_char
+            ld a, (PLAYER_TAIL_X)
+            dec a
+            ld (PLAYER_TAIL_X), a
+            jp main_continue
+        
+        snake_tail_right:
+            call clear_tail_char
+            ld a, (PLAYER_TAIL_X)
+            inc a
+            ld (PLAYER_TAIL_X), a
+            jp main_continue
+        
+        snake_tail_up:
+            call clear_tail_char
+            ld a, (PLAYER_TAIL_Y)
+            dec a
+            ld (PLAYER_TAIL_Y), a
+            jp main_continue
+        
+        snake_tail_down:
+            call clear_tail_char
+            ld a, (PLAYER_TAIL_Y)
+            inc a
+            ld (PLAYER_TAIL_Y), a
+            jp main_continue
+            
+clear_tail_char:
+    ; b = y
+    ; c = x
+    ; a = 0 or 1 
+    ld a, (PLAYER_TAIL_Y)
+    ld b, a
+    ld a, (PLAYER_TAIL_X)
+    ld c, a
+    ld a, ' '
+    call lcd_put_char
+    ret
+    
+    ; ---  ---
+    
+; --- show score ---
+show_score:
+    show_score_0:
+        ld a, (SCORE_MSG_RAM + 12)
+        inc a
+        ld (SCORE_MSG_RAM + 12), a
+        
+        cp 0x3a 
+        jr nz, show_score_exit
+    show_score_1:
+        ld a, '0'
+        ld (SCORE_MSG_RAM + 12), a
+        
+        ld a, (SCORE_MSG_RAM + 11)
+        inc a
+        ld (SCORE_MSG_RAM + 11), a
+        cp 0x3a 
+        jr nz, show_score_exit
+    show_score_2:
+        ld a, '0'
+        ld (SCORE_MSG_RAM + 11), a
+        
+        ld a, (SCORE_MSG_RAM + 10)
+        inc a
+        ld (SCORE_MSG_RAM + 10), a
+        cp 0x3a 
+        jr nz, show_score_exit
+    show_score_3:
+        ld a, '0'
+        ld (SCORE_MSG_RAM + 10), a
+        
+        ld a, (SCORE_MSG_RAM + 9)
+        inc a
+        ld (SCORE_MSG_RAM + 9), a
+        cp 0x3a 
+        jr nz, show_score_exit
+    show_score_4:
+        ld a, '0'
+        ld (SCORE_MSG_RAM + 9), a
+        
+        ld a, (SCORE_MSG_RAM + 8)
+        inc a
+        ld (SCORE_MSG_RAM + 8), a
+        cp 0x3a 
+        jr nz, show_score_exit
+    show_score_5:
+        ld a, '0'
+        ld (SCORE_MSG_RAM + 8), a
+        
+        ld a, (SCORE_MSG_RAM + 7)
+        inc a
+        ld (SCORE_MSG_RAM + 7), a
+        cp 0x3a 
+        jr nz, show_score_exit
+
+    show_score_exit:
+        ; show score hud
+        ld b, 0
+        ld c, 0
+        ld hl, SCORE_MSG_RAM
+        call lcd_print_str
+    
+        ret
+
+new_head_position_is_food:
+    ; inc score
+    ld a, (SCORE)
+    inc a
+    ld (SCORE), a
+    
+    call show_score
+    
+    call create_new_food
+    
+main_continue:
+
+draw_new_snake_head:
+    ; b = y
+    ; c = x
+    ; a = 0 or 1 
+    ld a, (PLAYER_Y)
+    ld b, a
+    ld a, (PLAYER_X)
+    ld c, a
+    ld a, 'O'
+    call lcd_put_char
+
+    call delay
+    
+    jp main_loop
+
+; --- game over ---
+
+game_over:
+        ; show game over msg
+        ld b, 3
+        ld c, 2
+        ld hl, game_over_msg_0
+        call lcd_print_str
+        ld b, 4
+        ld c, 2
+        ld hl, game_over_msg_1
+        call lcd_print_str
+
+    game_over_wait_button:
+        ld b, 5
+        ld c, 2
+        ld hl, game_over_msg_2
+        call lcd_print_str
+
+        call delay_push_button
+        bit 4, a
+        jr nz, game_over_wait_button
+    game_over_back_to_title:
+        jp title_screen
+
+
+; --- random number ---
+
+; ref: https://philpem.me.uk/leeedavison/z80/prng/index.html
+; return a = random number
+generate_random_number:
+    ; returns pseudo random 8 bit number in A. Only affects A.
+    ; (r_seed) is the byte from which the number is generated and MUST be
+    ; initialised to a non zero value or this function will always return
+    ; zero. Also r_seed must be in RAM, you can see why......
+    rand_8:
+    	LD	A,(r_seed)	; get seed
+    	AND	0xB8		; mask non feedback bits
+    	SCF			    ; set carry
+    	JP	PO,no_clr	; skip clear if odd
+    	CCF			    ; complement carry (clear it)
+    no_clr:
+    	LD	A,(r_seed)	; get seed back
+    	RLA			    ; rotate carry into byte
+    	LD	(r_seed),A	; save back for next prn
+    	RET			    ; done
+	
+; --- generate food at random location
+
+create_new_food:
+    create_new_food_position_try_again:
+        call generate_random_number 
+        ld d, a
+        and 0001111b
+        ld c, a ; c = random x 0-15
+        ld a, d
+        and 01110000b
+        srl a
+        srl a
+        srl a
+        srl a
+        
+        jr z, create_new_food_position_try_again ; first line is reserved for hud to show score
+        
+        ld b, a ; b = random y 0-8
+
+        ; check new head position has food
+        ld hl, CHARS_BUFFER
+        add hl, bc
+        ld a, (hl)
+        cp 'O' ; is snake body?
+        
+        ; if so, position is occupied so try to generate again
+        jr z, create_new_food_position_try_again 
+
+        cp '*' ; already has a food?
+        
+        ; if so, position is occupied so try to generate again
+        jr z, create_new_food_position_try_again 
+    
+    create_new_food_position_free:
+        ;ld b, random_y
+        ;ld c, random_x
+        ld a, '*'
+        call lcd_put_char
+    
+        ret
+    
+; --- snake tail buffer ---
+
+update_tail_buffer:
+    ld hl, SNAKE_TAIL_BUFFER
+    ld a, (PLAYER_Y)
+    ld b, a
+    ld a, (PLAYER_X)
+    ld c, a
+    add hl, bc
+    ld a, (PLAYER_DIR)    
+    ld (hl), a
+    ret
+
+; return a=input
+delay:
+        ld b, 0x1f
+    delay_wait_a:
+        push bc
+    
+;-----------------------------
+update_player_dir:
+
+    in a, (0) ; read input
+    
+    bit 0, a
+    jp z, player_dir_left
+    bit 1, a
+    jp z, player_dir_right
+    bit 2, a
+    jp z, player_dir_up
+    bit 3, a
+    jp z, player_dir_down
+
+    jp delay_continue
+
+player_dir_left:
+    ld a, 0x0e
+    ld (PLAYER_DIR), a
+    jp delay_continue
+
+player_dir_right:
+    ld a, 0x0d
+    ld (PLAYER_DIR), a
+    jp delay_continue
+
+player_dir_up:
+    ld a, 0x0b
+    ld (PLAYER_DIR), a
+    jp delay_continue
+
+player_dir_down:
+    ld a, 0x07
+    ld (PLAYER_DIR), a
+    
+    delay_continue:
+;-----------------------------
+    
+        ld b, 0xff
+    delay_wait_b:
+        nop
+        nop
+        nop
+        djnz delay_wait_b
+        pop bc
+        djnz delay_wait_a
+        ret
+
+; --- variable ---        
+
+title_msg db "S N A K E", 0
+push_button_msg db     "PUSH BUTTON", 0
+push_button_clr_msg db "           ", 0
+score_msg db "SCORE: 000000", 0
+
+game_over_msg_0 db "           ", 0
+game_over_msg_1 db " GAME OVER ", 0
+game_over_msg_2 db "           ", 0
+
+; --- characters set ---
+
+; ref.: https://github.com/dhepper/font8x8/blob/master/font8x8_basic.h
+font8x8_basic:
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0000
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0001
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0002
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0003
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0004
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0005
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0006
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0007
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0008
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0009
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+000A
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+000B
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+000C
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+000D
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+000E
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+000F
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0010
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0011
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0012
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0013
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0014
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0015
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0016
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0017
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0018
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0019
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+001A
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+001B
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+001C
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+001D
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+001E
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+001F
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0020
+    db 0x18, 0x3c, 0x3c, 0x18, 0x18, 0x00, 0x18, 0x00 ; U+0021
+    db 0x6c, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0022
+    db 0x6c, 0x6c, 0xfe, 0x6c, 0xfe, 0x6c, 0x6c, 0x00 ; U+0023
+    db 0x30, 0x7c, 0xc0, 0x78, 0x0c, 0xf8, 0x30, 0x00 ; U+0024
+    db 0x00, 0xc6, 0xcc, 0x18, 0x30, 0x66, 0xc6, 0x00 ; U+0025
+    db 0x38, 0x6c, 0x38, 0x76, 0xdc, 0xcc, 0x76, 0x00 ; U+0026
+    db 0x60, 0x60, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0027
+    db 0x18, 0x30, 0x60, 0x60, 0x60, 0x30, 0x18, 0x00 ; U+0028
+    db 0x60, 0x30, 0x18, 0x18, 0x18, 0x30, 0x60, 0x00 ; U+0029
+    db 0x00, 0x66, 0x3c, 0xff, 0x3c, 0x66, 0x00, 0x00 ; U+002A
+    db 0x00, 0x30, 0x30, 0xfc, 0x30, 0x30, 0x00, 0x00 ; U+002B
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x60 ; U+002C
+    db 0x00, 0x00, 0x00, 0xfc, 0x00, 0x00, 0x00, 0x00 ; U+002D
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x00 ; U+002E
+    db 0x06, 0x0c, 0x18, 0x30, 0x60, 0xc0, 0x80, 0x00 ; U+002F
+    db 0x7c, 0xc6, 0xce, 0xde, 0xf6, 0xe6, 0x7c, 0x00 ; U+0030
+    db 0x30, 0x70, 0x30, 0x30, 0x30, 0x30, 0xfc, 0x00 ; U+0031
+    db 0x78, 0xcc, 0x0c, 0x38, 0x60, 0xcc, 0xfc, 0x00 ; U+0032
+    db 0x78, 0xcc, 0x0c, 0x38, 0x0c, 0xcc, 0x78, 0x00 ; U+0033
+    db 0x1c, 0x3c, 0x6c, 0xcc, 0xfe, 0x0c, 0x1e, 0x00 ; U+0034
+    db 0xfc, 0xc0, 0xf8, 0x0c, 0x0c, 0xcc, 0x78, 0x00 ; U+0035
+    db 0x38, 0x60, 0xc0, 0xf8, 0xcc, 0xcc, 0x78, 0x00 ; U+0036
+    db 0xfc, 0xcc, 0x0c, 0x18, 0x30, 0x30, 0x30, 0x00 ; U+0037
+    db 0x78, 0xcc, 0xcc, 0x78, 0xcc, 0xcc, 0x78, 0x00 ; U+0038
+    db 0x78, 0xcc, 0xcc, 0x7c, 0x0c, 0x18, 0x70, 0x00 ; U+0039
+    db 0x00, 0x30, 0x30, 0x00, 0x00, 0x30, 0x30, 0x00 ; U+003A
+    db 0x00, 0x30, 0x30, 0x00, 0x00, 0x30, 0x30, 0x60 ; U+003B
+    db 0x18, 0x30, 0x60, 0xc0, 0x60, 0x30, 0x18, 0x00 ; U+003C
+    db 0x00, 0x00, 0xfc, 0x00, 0x00, 0xfc, 0x00, 0x00 ; U+003D
+    db 0x60, 0x30, 0x18, 0x0c, 0x18, 0x30, 0x60, 0x00 ; U+003E
+    db 0x78, 0xcc, 0x0c, 0x18, 0x30, 0x00, 0x30, 0x00 ; U+003F
+    db 0x7c, 0xc6, 0xde, 0xde, 0xde, 0xc0, 0x78, 0x00 ; U+0040
+    db 0x30, 0x78, 0xcc, 0xcc, 0xfc, 0xcc, 0xcc, 0x00 ; U+0041
+    db 0xfc, 0x66, 0x66, 0x7c, 0x66, 0x66, 0xfc, 0x00 ; U+0042
+    db 0x3c, 0x66, 0xc0, 0xc0, 0xc0, 0x66, 0x3c, 0x00 ; U+0043
+    db 0xf8, 0x6c, 0x66, 0x66, 0x66, 0x6c, 0xf8, 0x00 ; U+0044
+    db 0xfe, 0x62, 0x68, 0x78, 0x68, 0x62, 0xfe, 0x00 ; U+0045
+    db 0xfe, 0x62, 0x68, 0x78, 0x68, 0x60, 0xf0, 0x00 ; U+0046
+    db 0x3c, 0x66, 0xc0, 0xc0, 0xce, 0x66, 0x3e, 0x00 ; U+0047
+    db 0xcc, 0xcc, 0xcc, 0xfc, 0xcc, 0xcc, 0xcc, 0x00 ; U+0048
+    db 0x78, 0x30, 0x30, 0x30, 0x30, 0x30, 0x78, 0x00 ; U+0049
+    db 0x1e, 0x0c, 0x0c, 0x0c, 0xcc, 0xcc, 0x78, 0x00 ; U+004A
+    db 0xe6, 0x66, 0x6c, 0x78, 0x6c, 0x66, 0xe6, 0x00 ; U+004B
+    db 0xf0, 0x60, 0x60, 0x60, 0x62, 0x66, 0xfe, 0x00 ; U+004C
+    db 0xc6, 0xee, 0xfe, 0xfe, 0xd6, 0xc6, 0xc6, 0x00 ; U+004D
+    db 0xc6, 0xe6, 0xf6, 0xde, 0xce, 0xc6, 0xc6, 0x00 ; U+004E
+    db 0x38, 0x6c, 0xc6, 0xc6, 0xc6, 0x6c, 0x38, 0x00 ; U+004F
+    db 0xfc, 0x66, 0x66, 0x7c, 0x60, 0x60, 0xf0, 0x00 ; U+0050
+    db 0x78, 0xcc, 0xcc, 0xcc, 0xdc, 0x78, 0x1c, 0x00 ; U+0051
+    db 0xfc, 0x66, 0x66, 0x7c, 0x6c, 0x66, 0xe6, 0x00 ; U+0052
+    db 0x78, 0xcc, 0xe0, 0x70, 0x1c, 0xcc, 0x78, 0x00 ; U+0053
+    db 0xfc, 0xb4, 0x30, 0x30, 0x30, 0x30, 0x78, 0x00 ; U+0054
+    db 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xfc, 0x00 ; U+0055
+    db 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0x78, 0x30, 0x00 ; U+0056
+    db 0xc6, 0xc6, 0xc6, 0xd6, 0xfe, 0xee, 0xc6, 0x00 ; U+0057
+    db 0xc6, 0xc6, 0x6c, 0x38, 0x38, 0x6c, 0xc6, 0x00 ; U+0058
+    db 0xcc, 0xcc, 0xcc, 0x78, 0x30, 0x30, 0x78, 0x00 ; U+0059
+    db 0xfe, 0xc6, 0x8c, 0x18, 0x32, 0x66, 0xfe, 0x00 ; U+005A
+    db 0x78, 0x60, 0x60, 0x60, 0x60, 0x60, 0x78, 0x00 ; U+005B
+    db 0xc0, 0x60, 0x30, 0x18, 0x0c, 0x06, 0x02, 0x00 ; U+005C
+    db 0x78, 0x18, 0x18, 0x18, 0x18, 0x18, 0x78, 0x00 ; U+005D
+    db 0x10, 0x38, 0x6c, 0xc6, 0x00, 0x00, 0x00, 0x00 ; U+005E
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff ; U+005F
+    db 0x30, 0x30, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+0060
+    db 0x00, 0x00, 0x78, 0x0c, 0x7c, 0xcc, 0x76, 0x00 ; U+0061
+    db 0xe0, 0x60, 0x60, 0x7c, 0x66, 0x66, 0xdc, 0x00 ; U+0062
+    db 0x00, 0x00, 0x78, 0xcc, 0xc0, 0xcc, 0x78, 0x00 ; U+0063
+    db 0x1c, 0x0c, 0x0c, 0x7c, 0xcc, 0xcc, 0x76, 0x00 ; U+0064
+    db 0x00, 0x00, 0x78, 0xcc, 0xfc, 0xc0, 0x78, 0x00 ; U+0065
+    db 0x38, 0x6c, 0x60, 0xf0, 0x60, 0x60, 0xf0, 0x00 ; U+0066
+    db 0x00, 0x00, 0x76, 0xcc, 0xcc, 0x7c, 0x0c, 0xf8 ; U+0067
+    db 0xe0, 0x60, 0x6c, 0x76, 0x66, 0x66, 0xe6, 0x00 ; U+0068
+    db 0x30, 0x00, 0x70, 0x30, 0x30, 0x30, 0x78, 0x00 ; U+0069
+    db 0x0c, 0x00, 0x0c, 0x0c, 0x0c, 0xcc, 0xcc, 0x78 ; U+006A
+    db 0xe0, 0x60, 0x66, 0x6c, 0x78, 0x6c, 0xe6, 0x00 ; U+006B
+    db 0x70, 0x30, 0x30, 0x30, 0x30, 0x30, 0x78, 0x00 ; U+006C
+    db 0x00, 0x00, 0xcc, 0xfe, 0xfe, 0xd6, 0xc6, 0x00 ; U+006D
+    db 0x00, 0x00, 0xf8, 0xcc, 0xcc, 0xcc, 0xcc, 0x00 ; U+006E
+    db 0x00, 0x00, 0x78, 0xcc, 0xcc, 0xcc, 0x78, 0x00 ; U+006F
+    db 0x00, 0x00, 0xdc, 0x66, 0x66, 0x7c, 0x60, 0xf0 ; U+0070
+    db 0x00, 0x00, 0x76, 0xcc, 0xcc, 0x7c, 0x0c, 0x1e ; U+0071
+    db 0x00, 0x00, 0xdc, 0x76, 0x66, 0x60, 0xf0, 0x00 ; U+0072
+    db 0x00, 0x00, 0x7c, 0xc0, 0x78, 0x0c, 0xf8, 0x00 ; U+0073
+    db 0x10, 0x30, 0x7c, 0x30, 0x30, 0x34, 0x18, 0x00 ; U+0074
+    db 0x00, 0x00, 0xcc, 0xcc, 0xcc, 0xcc, 0x76, 0x00 ; U+0075
+    db 0x00, 0x00, 0xcc, 0xcc, 0xcc, 0x78, 0x30, 0x00 ; U+0076
+    db 0x00, 0x00, 0xc6, 0xd6, 0xfe, 0xfe, 0x6c, 0x00 ; U+0077
+    db 0x00, 0x00, 0xc6, 0x6c, 0x38, 0x6c, 0xc6, 0x00 ; U+0078
+    db 0x00, 0x00, 0xcc, 0xcc, 0xcc, 0x7c, 0x0c, 0xf8 ; U+0079
+    db 0x00, 0x00, 0xfc, 0x98, 0x30, 0x64, 0xfc, 0x00 ; U+007A
+    db 0x1c, 0x30, 0x30, 0xe0, 0x30, 0x30, 0x1c, 0x00 ; U+007B
+    db 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x00 ; U+007C
+    db 0xe0, 0x30, 0x30, 0x1c, 0x30, 0x30, 0xe0, 0x00 ; U+007D
+    db 0x76, 0xdc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+007E
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; U+007F
+
+
+; --- LCD subroutines ---
+
+lcd_init:
+    ld a, 0x30
+    call lcd_send_cmd
+    ld a, 0x01
+    call lcd_send_cmd
+    ld a, 0x02
+    call lcd_send_cmd
+    ld a, 0x04
+    call lcd_send_cmd
+    ld a, 0x06
+    call lcd_send_cmd
+    ld a, 0x0c
+    call lcd_send_cmd
+    ld a, 0x10
+    call lcd_send_cmd
+    ld a, 0x40
+    call lcd_send_cmd
+    ld a, 0x80
+    call lcd_send_cmd
+    ld a, 0x34 ; extended instructions
+    call lcd_send_cmd
+    ld a, 0x36 ; enable graphics
+    call lcd_send_cmd
+    ret
+
+lcd_send_cmd:
+    out (PORT_LCD_DATA), a
+    ; send E pulse
+    ld a, 00001100b
+    out (PORT_LCD_CTR), a
+    ld a, 00001000b
+    out (PORT_LCD_CTR), a
+    ret
+
+lcd_send_data:
+    out (PORT_LCD_DATA), a
+    ; send E pulse
+    ld a, 00001101b
+    out (PORT_LCD_CTR), a
+    ld a, 00001001b
+    out (PORT_LCD_CTR), a
+    ret
+
+; cd = fill pattern     
+lcd_fill_screen:
+        ld b, 0x20
+    
+    lcd_fill_screen_next_y:
+        ld a, 0x7f
+        add a, b
+        call lcd_send_cmd
+        ld a, 0x80
+        call lcd_send_cmd
+    
+        push bc
+    
+        ld b, 0x10
+        
+    lcd_fill_screen_next_x:
+        push af
+        ld a, c
+        call lcd_send_data
+        ld a, d
+        call lcd_send_data
+        pop af
+    
+        djnz lcd_fill_screen_next_x
+    
+        pop bc
+    
+        djnz lcd_fill_screen_next_y
+    
+        ret
+
+; ------------ CHARS BUFFER ---
+; 16x8 pixels -> 128 bytes on ram
+
+lcd_clear_chars_buffer:
+        ld a, 0
+        ld hl, CHARS_BUFFER
+        ld b, 8
+        ld d, 0
+    lcd_clear_chars_buffer_next_y:
+        push bc
+        ld e, 0
+        ld b, 16
+    lcd_clear_chars_buffer_next_x:
+        ld (de), a
+        inc e
+        djnz lcd_clear_chars_buffer_next_x
+        pop bc
+        inc d
+        djnz lcd_clear_chars_buffer_next_y
+        ret
+
+; draw 8x8 char on lcd
+; b = y
+; c = x
+; a = char ascii code
+lcd_put_char:
+        push af
+        push bc
+        push hl
+        
+        ; first update pixel on ram buffer
+        ld hl, CHARS_BUFFER
+        add hl, bc
+        ld (hl), a
+        
+        ; calculate lcd address
+        ; lcd_x = ((y & 4) << 1) + (x >> 1)
+        ; lcd_y = (y & 3) << 3
+        ld a, b
+        and 4
+        sla a
+        ld d, a
+        ld a, c
+        sra a
+        add a, d
+        ld d, a ; d = lcd_x
+        
+        ld a, b
+        and 3
+        sla a
+        sla a
+        sla a
+        ld e, a ; e = lcd_y
+        
+        ; draw pixels on LCD
+        
+        ld b, 0x8 ; draw vertical 8 pixels
+        
+    lcd_put_char_next_y:
+        ld a, 0x7f
+        add a, e
+        add a, b
+        call lcd_send_cmd
+        ld a, 0x80
+        add a, d
+        call lcd_send_cmd
+    
+        ld a, l
+        and 11111110b
+        ld l, a
+        ld a, (hl) ; a = ascii code
+
+        ; convert ascii code and line number to char pixels
+        push hl
+        push de
+        push bc
+        ld bc, 0
+        ld c, a
+        sla c
+        rl b
+        sla c
+        rl b
+        sla c
+        rl b
+        ld hl, font8x8_basic
+        add hl, bc
+        pop bc
+        ld de, 0
+        ld e, b
+        dec e
+        add hl, de
+        ld a, (hl)
+        call lcd_send_data
+        pop de
+        pop hl
+
+        ld a, l
+        or 00000001b
+        ld l, a
+        ld a, (hl) ; a = ascii code
+        
+        ; convert ascii code and line number to char pixels
+        push hl
+        push de
+        push bc
+        ld bc, 0
+        ld c, a
+        sla c
+        rl b
+        sla c
+        rl b
+        sla c
+        rl b
+        ld hl, font8x8_basic
+        add hl, bc
+        pop bc
+        ld de, 0
+        ld e, b
+        dec e
+        add hl, de
+        ld a, (hl)
+        call lcd_send_data
+        pop de
+        pop hl
+        
+        djnz lcd_put_char_next_y
+        
+        pop hl
+        pop bc
+        pop af
+        ret
+        
+; draw string terminated with 0 on lcd
+; b = y
+; c = x
+; hl = string address terminated with 0
+lcd_print_str:
+    lcd_print_str_next_char:
+        ld a, (hl)
+        cp 0
+        jp z, lcd_print_str_end
+        ; draw 8x8 char on lcd
+        ; b = y
+        ; c = x
+        ; a = char ascii code
+        call lcd_put_char
+        inc c
+        inc hl
+        jp lcd_print_str_next_char
+    lcd_print_str_end:
+        ret
+    

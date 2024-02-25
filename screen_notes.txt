@@ -1,0 +1,43 @@
+total: 16x8
+
+   0  1  2  3  4  5  6  7
+   01 23 45 67 89 ab cd ef
+0  XX XX XX XX XX XX XX XX
+|  XX XX XX XX XX XX XX XX
+|  XX XX XX XX XX XX XX XX
+31 XX XX XX XX XX XX XX XX
+
+   8  9  a  b  c  d  e  f
+   01 23 45 67 89 ab cd ef
+32 XX XX XX XX XX XX XX XX
+|  XX XX XX XX XX XX XX XX
+|  XX XX XX XX XX XX XX XX
+63 XX XX XX XX XX XX XX XX
+
+-------------------
+lcd_x = ((y & 4) << 1) + (x >> 1)
+lcd_y = (y & 3) << 3
+-------------------
+
+(x, y) = (3, 7) 
+
+
+y -> (7 << 2) = 7*8 = 56
+
+lcd_x = ((y & 4) << 1) + (x >> 1) = 8+1
+lcd_y = (y & 3) << 3 = 3 24,25,26,27,28,29,30,13
+
+
+ld a, 0x80 | lcd_y
+ld a, 0x80 | lcd_x
+
+(15, 4)
+lcd_x = 8 + 7 = 15
+lcd_y = 0
+
+se por exemplo (x, y) = (3, 7) => (x & 0b11111110) e (x & 0b11111111)
+
+ld a, (0x72)
+call send_data 
+ld a, (0x73)
+call send_data 
